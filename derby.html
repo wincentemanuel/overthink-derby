@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Overthink Derby</title>
+<style>
+  :root { --bg:#14121f; --card:#1e1b2e; --text:#f3f0ff; --muted:#9b95b8; --accent:#ff4d6d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 16px; }
+  h1 { margin: 8px 0 0; font-size: 2rem; }
+  .sub { color: var(--muted); margin: 4px 0 16px; }
+  .layout { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  .panel { background: var(--card); border-radius: 12px; padding: 14px; }
+  .left { flex: 1 1 260px; min-width: 240px; }
+  .right { flex: 0 1 480px; margin: 0 auto; position: relative; }
+  .row { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #3a3555; background: #12101c; color: var(--text); font-size: 1rem; }
+  button { padding: 10px 14px; border: 0; border-radius: 8px; background: #3a3555; color: var(--text); font-size: 1rem; cursor: pointer; }
+  button:hover:not(:disabled) { filter: brightness(1.2); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.go { background: var(--accent); font-weight: 700; width: 100%; margin-top: 12px; font-size: 1.15rem; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+  .chip { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: #12101c; border: 2px solid; }
+  .chip button { padding: 0 4px; background: transparent; font-size: 1.1rem; line-height: 1; }
+  h3 { margin: 16px 0 8px; font-size: 1rem; color: var(--muted); }
+  ol { margin: 0; padding-left: 22px; }
+  ol li { padding: 2px 0; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .hist { list-style: none; padding: 0; font-size: .9rem; color: var(--muted); }
+  .hist li { padding: 3px 0; }
+  .msg { color: #ffb4c0; min-height: 1.2em; margin: 8px 0 0; font-size: .9rem; }
+  canvas { width: 100%; height: auto; border-radius: 12px; background: #0e0c18; display: block; }
+  .overlay { position: absolute; inset: 14px; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: rgba(10,8,20,.85); border-radius: 12px; padding: 16px; }
+  .overlay.show { display: flex; }
+  .overlay .big { font-size: 3.5rem; font-weight: 800; }
+  .overlay .win { font-size: 2rem; font-weight: 800; margin: 6px 0; }
+  .overlay .cap { color: var(--muted); margin-bottom: 16px; }
+  .overlay button { background: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The Overthink Derby</h1>
+  <p class="sub">Can't decide? Stop thinking. Let the marbles decide.</p>
+
+  <div class="layout">
+    <div class="panel left">
+      <div class="row">
+        <input id="optInput" type="text" maxlength="20" placeholder="Type an option, e.g. Ramen">
+        <button id="addBtn">Add</button>
+      </div>
+      <p class="msg" id="msg"></p>
+      <div class="chips" id="chips"></div>
+      <button class="go" id="goBtn">START RACE</button>
+
+      <h3>Live standings</h3>
+      <ol id="board"></ol>
+
+      <h3>Past winners <button id="clearBtn" style="padding:2px 8px;font-size:.8rem;margin-left:6px">clear</button></h3>
+      <ul class="hist" id="hist"></ul>
+    </div>
+
+    <div class="panel right">
+      <canvas id="cv"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="big" id="big"></div>
+        <div id="winLabel" class="win"></div>
+        <div id="caption" class="cap"></div>
+        <button id="againBtn">Race again</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var W = 450, VIEW_H = 720, WORLD_H = 2400;
+  var R = 10, WALL_PAD = 1.5, FINISH_Y = WORLD_H - 70;
+  var COLORS = ['#ff4d6d', '#4dabf7', '#ffd43b', '#51cf66', '#cc5de8', '#ff922b', '#22d3ee', '#f783ac'];
+  var CAPTIONS = [
+    'The marble has spoken.',
+    'No take-backs. That is the rule.',
+    'Overthinking has been defeated.',
+    'Fate decided. Go do it.',
+    'You can stop worrying now.'
+  ];
+
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  cv.width = W * dpr; cv.height = VIEW_H * dpr;
+  ctx.scale(dpr, dpr);
+
+  var optInput = document.getElementById('optInput');
+  var addBtn = document.getElementById('addBtn');
+  var goBtn = document.getElementById('goBtn');
+  var chipsEl = document.getElementById('chips');
+  var boardEl = document.getElementById('board');
+  var histEl = document.getElementById('hist');
+  var clearBtn = document.getElementById('clearBtn');
+  var msgEl = document.getElementById('msg');
+  var overlay = document.getElementById('overlay');
+  var bigEl = document.getElementById('big');
+  var winLabel = document.getElementById('winLabel');
+  var captionEl = document.getElementById('caption');
+  var againBtn = document.getElementById('againBtn');
+
+  var options = [
+    { name: 'Study', color: COLORS[0] },
+    { name: 'Sleep', color: COLORS[1] },
+    { name: 'Eat ramen', color: COLORS[2] },
+    { name: 'Doomscroll', color: COLORS[3] }
+  ];
+  var marbles = [];
+  var state = 'idle'; // idle, countdown, running, done
+  var countdownStart = 0;
+  var raceStart = 0;
+  var elapsedRace = 0;
+  var timeScale = 1;
+  var winnerIdx = -1;
+  var camY = 0;
+
+  var CH_X = W / 2, CH_Y = 95, CH_R = 75;
+  var chamber = true;
+
+  var walls = [];
+  var drains = [];
+  function addWall(x1, y1, x2, y2) { walls.push({ x1: x1, y1: y1, x2: x2, y2: y2 }); }
+
+  var BOWL_R = 148;
+
+  // All bowls has an effective hole opening radius of 10 (10 + WALL_PAD)
+  function addSingleBowlRow(cx, cy, isFinal) {
+    var effectiveHoleR = isFinal ? 10 : 10;
+    var holeHalf = effectiveHoleR + WALL_PAD;
+    var theta = Math.asin(holeHalf / BOWL_R);
+    var parts = 24, i, a1, a2;
+
+    // Right arc of the bowl
+    for (i = 0; i < parts; i++) {
+      a1 = (i / parts) * (Math.PI / 2 - theta);
+      a2 = ((i + 1) / parts) * (Math.PI / 2 - theta);
+      addWall(cx + BOWL_R * Math.cos(a1), cy + BOWL_R * Math.sin(a1),
+              cx + BOWL_R * Math.cos(a2), cy + BOWL_R * Math.sin(a2));
+    }
+    // Left arc of the bowl
+    for (i = 0; i < parts; i++) {
+      a1 = Math.PI / 2 + theta + (i / parts) * (Math.PI / 2 - theta);
+      a2 = Math.PI / 2 + theta + ((i + 1) / parts) * (Math.PI / 2 - theta);
+      addWall(cx + BOWL_R * Math.cos(a1), cy + BOWL_R * Math.sin(a1),
+              cx + BOWL_R * Math.cos(a2), cy + BOWL_R * Math.sin(a2));
+    }
+
+    // Steep funnel walls from the map edges into the bowl rim
+    addWall(0, cy - 55, cx - BOWL_R, cy);
+    addWall(W, cy - 55, cx + BOWL_R, cy);
+
+    var drainY = cy + BOWL_R * Math.cos(theta);
+    drains.push({ x: cx, y: drainY });
+  }
+
+  var NUM_ROWS = 9;
+  for (var r = 0; r < NUM_ROWS; r++) {
+    var rowY = 230 + r * 230;
+    var isFinal = (r === NUM_ROWS - 1);
+    var shift = isFinal ? 0 : ((r % 2 === 0) ? -24 : 24);
+    addSingleBowlRow(W / 2 + shift, rowY, isFinal);
+  }
+
+  function showMsg(t) { msgEl.textContent = t || ''; }
+
+  function nextColor() {
+    for (var i = 0; i < COLORS.length; i++) {
+      var used = options.some(function (o) { return o.color === COLORS[i]; });
+      if (!used) return COLORS[i];
+    }
+    return COLORS[0];
+  }
+
+  function renderChips() {
+    chipsEl.innerHTML = '';
+    options.forEach(function (o, i) {
+      var c = document.createElement('div');
+      c.className = 'chip';
+      c.style.borderColor = o.color;
+      var s = document.createElement('span');
+      s.textContent = o.name;
+      var b = document.createElement('button');
+      b.textContent = '\u00d7';
+      b.title = 'Remove';
+      b.disabled = (state === 'countdown' || state === 'running');
+      b.addEventListener('click', function () {
+        if (options.length <= 2) { showMsg('You need at least 2 options.'); return; }
+        options.splice(i, 1);
+        showMsg('');
+        resetField();
+        renderChips();
+      });
+      c.appendChild(s); c.appendChild(b);
+      chipsEl.appendChild(c);
+    });
+  }
+
+  function addOption() {
+    if (state === 'countdown' || state === 'running') return;
+    var name = optInput.value.trim();
+    if (!name) { showMsg('Type something first.'); return; }
+    if (options.length >= 8) { showMsg('Max 8 options.'); return; }
+    var dup = options.some(function (o) { return o.name.toLowerCase() === name.toLowerCase(); });
+    if (dup) { showMsg('That option is already in.'); return; }
+    options.push({ name: name, color: nextColor() });
+    optInput.value = '';
+    showMsg('');
+    resetField();
+    renderChips();
+  }
+
+  function resetField() {
+    marbles = [];
+    var n = options.length;
+    for (var i = 0; i < n; i++) {
+      var ang = (i / n) * Math.PI * 2;
+      marbles.push({
+        x: CH_X + 38 * Math.cos(ang),
+        y: CH_Y + 38 * Math.sin(ang),
+        vx: 0,
+        vy: 0,
+        r: R,
+        idx: i,
+        finished: false,
+        stuck: 0
+      });
+    }
+    chamber = true;
+    winnerIdx = -1;
+    camY = 0;
+    elapsedRace = 0;
+    updateBoard();
+  }
+
+  function updateBoard() {
+    var order = marbles.slice().sort(function (a, b) { return b.y - a.y; });
+    boardEl.innerHTML = '';
+    order.forEach(function (m) {
+      var li = document.createElement('li');
+      var d = document.createElement('span');
+      d.className = 'dot';
+      d.style.background = options[m.idx].color;
+      li.appendChild(d);
+      li.appendChild(document.createTextNode(options[m.idx].name));
+      boardEl.appendChild(li);
+    });
+  }
+
+  function step(dt) {
+    var g = 215;
+    marbles.forEach(function (m) {
+      if (chamber) {
+        var rx = m.x - CH_X, ry = m.y - CH_Y;
+        var rd = Math.sqrt(rx * rx + ry * ry) || 0.001;
+        m.vx += (-ry / rd) * 520 * dt + (Math.random() - 0.5) * 600 * dt;
+        m.vy += (rx / rd) * 520 * dt + (Math.random() - 0.5) * 600 * dt;
+        var spd = Math.sqrt(m.vx * m.vx + m.vy * m.vy);
+        if (spd > 270) { m.vx *= 270 / spd; m.vy *= 270 / spd; }
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
+        rx = m.x - CH_X; ry = m.y - CH_Y;
+        rd = Math.sqrt(rx * rx + ry * ry) || 0.001;
+        var lim = CH_R - m.r - 3;
+        if (rd > lim) {
+          var ux = rx / rd, uy = ry / rd;
+          m.x = CH_X + ux * lim;
+          m.y = CH_Y + uy * lim;
+          var vr = m.vx * ux + m.vy * uy;
+          if (vr > 0) { m.vx -= 2.0 * vr * ux; m.vy -= 2.0 * vr * uy; }
+        }
+      } else {
+        // Strictly 0 air drag / 0 friction
+        m.vy += g * dt;
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
+      }
+
+      // Ceiling & outer walls (0 friction)
+      if (m.y < m.r) { m.y = m.r; m.vy = Math.abs(m.vy); }
+      if (m.x < m.r) { m.x = m.r; m.vx = Math.abs(m.vx); }
+      if (m.x > W - m.r) { m.x = W - m.r; m.vx = -Math.abs(m.vx); }
+
+      // Bowl walls: find the single deepest contact per substep so segment joints never double-bounce
+      var bestPen = 0, bestNx = 0, bestNy = 0;
+      var wmin = m.r + WALL_PAD;
+      for (var s = 0; s < walls.length; s++) {
+        var w = walls[s];
+        if (m.y + wmin < Math.min(w.y1, w.y2) || m.y - wmin > Math.max(w.y1, w.y2)) continue;
+        var sx = w.x2 - w.x1, sy = w.y2 - w.y1;
+        var t = ((m.x - w.x1) * sx + (m.y - w.y1) * sy) / (sx * sx + sy * sy);
+        t = Math.max(0, Math.min(1, t));
+        var qx = w.x1 + t * sx, qy = w.y1 + t * sy;
+        var wx = m.x - qx, wy = m.y - qy;
+        var wd2 = wx * wx + wy * wy;
+        if (wd2 < wmin * wmin) {
+          var wd = Math.sqrt(wd2) || 0.001;
+          var pen = wmin - wd;
+          if (pen > bestPen) {
+            bestPen = pen;
+            bestNx = wx / wd;
+            bestNy = wy / wd;
+          }
+        }
+      }
+      if (bestPen > 0) {
+        m.x += bestNx * bestPen;
+        m.y += bestNy * bestPen;
+        var wvn = m.vx * bestNx + m.vy * bestNy;
+        if (wvn < 0) {
+          var restitution = (-wvn > 45) ? 0.55 : 0.0;
+          m.vx -= (1 + restitution) * wvn * bestNx;
+          m.vy -= (1 + restitution) * wvn * bestNy;
+        }
+      }
+
+      // Only check for wedging if two marbles physically pinch inside a drain hole and stall
+      var inDrain = false;
+      for (var k = 0; k < drains.length; k++) {
+        if (Math.abs(m.x - drains[k].x) < 18 && Math.abs(m.y - drains[k].y) < 14) {
+          inDrain = true;
+          break;
+        }
+      }
+      var sp = Math.hypot(m.vx, m.vy);
+      if (inDrain && sp < 8) {
+        m.stuck += dt;
+      } else {
+        m.stuck = 0;
+      }
+      if (m.stuck > 1.2) {
+        m.vx += (Math.random() < 0.5 ? -1 : 1) * 45;
+        m.stuck = 0;
+      }
+
+      var maxSpeed = 370;
+      var curSpeed = Math.hypot(m.vx, m.vy);
+      if (curSpeed > maxSpeed) {
+        m.vx = (m.vx / curSpeed) * maxSpeed;
+        m.vy = (m.vy / curSpeed) * maxSpeed;
+      }
+    });
+
+    // Marble vs Marble elastic collision (0 friction, full momentum transfer)
+    for (var a = 0; a < marbles.length; a++) {
+      for (var b = a + 1; b < marbles.length; b++) {
+        var A = marbles[a], B = marbles[b];
+        var dx = B.x - A.x, dy = B.y - A.y;
+        var min = A.r + B.r;
+        var d2 = dx * dx + dy * dy;
+        if (d2 < min * min) {
+          var d = Math.sqrt(d2) || 0.001;
+          var nx = dx / d, ny = dy / d;
+          var overlap = (min - d) / 2;
+          A.x -= nx * overlap; A.y -= ny * overlap;
+          B.x += nx * overlap; B.y += ny * overlap;
+          var rel = (B.vx - A.vx) * nx + (B.vy - A.vy) * ny;
+          if (rel < 0) {
+            A.vx += rel * nx; A.vy += rel * ny;
+            B.vx -= rel * nx; B.vy -= rel * ny;
+          }
+        }
+      }
+    }
+  }
+
+  function finishCheck() {
+    for (var i = 0; i < marbles.length; i++) {
+      if (marbles[i].y >= FINISH_Y) { return marbles[i]; }
+    }
+    return null;
+  }
+
+  function saveHistory(name) {
+    try {
+      var list = JSON.parse(localStorage.getItem('derbyHistory') || '[]');
+      list.unshift({ w: name, c: options.length, t: new Date().toLocaleTimeString() });
+      list = list.slice(0, 8);
+      localStorage.setItem('derbyHistory', JSON.stringify(list));
+    } catch (e) {}
+    renderHistory();
+  }
+
+  function renderHistory() {
+    var list = [];
+    try { list = JSON.parse(localStorage.getItem('derbyHistory') || '[]'); } catch (e) {}
+    histEl.innerHTML = '';
+    if (!list.length) {
+      var li0 = document.createElement('li');
+      li0.textContent = 'No races yet.';
+      histEl.appendChild(li0);
+      return;
+    }
+    list.forEach(function (h) {
+      var li = document.createElement('li');
+      li.textContent = h.w + ' (' + h.c + ' options, ' + h.t + ')';
+      histEl.appendChild(li);
+    });
+  }
+
+  function startRace() {
+    if (state === 'countdown' || state === 'running') return;
+    overlay.classList.remove('show');
+    resetField();
+    state = 'countdown';
+    countdownStart = performance.now();
+    goBtn.disabled = true; addBtn.disabled = true;
+    renderChips();
+    showMsg('');
+  }
+
+  function endRace(m) {
+    state = 'done';
+    winnerIdx = m.idx;
+    timeScale = 1;
+    bigEl.textContent = '\ud83c\udfc6';
+    winLabel.textContent = options[m.idx].name;
+    winLabel.style.color = options[m.idx].color;
+    captionEl.textContent = CAPTIONS[Math.floor(Math.random() * CAPTIONS.length)] + ' (' + elapsedRace.toFixed(1) + 's)';
+    overlay.classList.add('show');
+    goBtn.disabled = false; addBtn.disabled = false;
+    saveHistory(options[m.idx].name);
+    renderChips();
+  }
+
+  function draw(now) {
+    ctx.clearRect(0, 0, W, VIEW_H);
+
+    ctx.save();
+    ctx.translate(0, -camY);
+
+    // Bowl stage labels
+    ctx.font = 'bold 44px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    for (var b = 0; b < NUM_ROWS; b++) {
+      ctx.fillStyle = (b === NUM_ROWS - 1) ? 'rgba(255, 77, 109, 0.08)' : 'rgba(255,255,255,0.03)';
+      var label = (b === NUM_ROWS - 1) ? 'FINAL SHOWDOWN' : ('BOWL ' + (b + 1));
+      ctx.fillText(label, W / 2, 230 + b * 230 + 60);
+    }
+
+    // Bowls and side ramps
+    ctx.strokeStyle = '#8d86b8';
+    ctx.lineWidth = WALL_PAD * 2;
+    ctx.lineCap = 'round';
+    walls.forEach(function (w) {
+      ctx.beginPath(); ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2); ctx.stroke();
+    });
+
+    // Spinning start circle
+    if (chamber) {
+      ctx.save();
+      ctx.strokeStyle = '#ff4d6d';
+      ctx.lineWidth = 6;
+      ctx.setLineDash([14, 10]);
+      ctx.lineDashOffset = (state === 'countdown') ? -(now / 25) : 0;
+      ctx.beginPath(); ctx.arc(CH_X, CH_Y, CH_R, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
+    // Checkered finish line
+    for (var x = 0; x < W; x += 20) {
+      for (var r = 0; r < 2; r++) {
+        ctx.fillStyle = ((x / 20 + r) % 2 === 0) ? '#ffffff' : '#222';
+        ctx.fillRect(x, FINISH_Y + r * 10, 20, 10);
+      }
+    }
+
+    // Marbles
+    marbles.forEach(function (m) {
+      var col = options[m.idx].color;
+      ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+      ctx.fillStyle = col; ctx.fill();
+      ctx.lineWidth = (m.idx === winnerIdx) ? 4 : 2;
+      ctx.strokeStyle = (m.idx === winnerIdx) ? '#fff' : 'rgba(0,0,0,.45)';
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.35)';
+      ctx.beginPath(); ctx.arc(m.x - 3, m.y - 3, 3, 0, Math.PI * 2); ctx.fill();
+      // Name label
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(options[m.idx].name, m.x, m.y - m.r - 4);
+    });
+
+    ctx.restore();
+
+    // Right-side elevation minimap bar
+    var barH = VIEW_H - 40, barY = 20, barX = W - 12;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(barX, barY, 4, barH);
+    marbles.forEach(function (m) {
+      var py = barY + Math.min(1, Math.max(0, m.y / FINISH_Y)) * barH;
+      ctx.fillStyle = options[m.idx].color;
+      ctx.beginPath(); ctx.arc(barX + 2, py, 4, 0, Math.PI * 2); ctx.fill();
+    });
+
+    if (state === 'running' || state === 'done') {
+      ctx.font = 'bold 14px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#9b95b8';
+      ctx.fillText('Time: ' + elapsedRace.toFixed(1) + 's', 14, 26);
+    }
+
+    if (state === 'countdown') {
+      var left = 3 - Math.floor((now - countdownStart) / 1000);
+      ctx.font = 'bold 90px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,255,255,.9)';
+      ctx.fillText(left > 0 ? String(left) : 'GO!', W / 2, VIEW_H / 2);
+    }
+    if (state === 'running' && timeScale < 1) {
+      ctx.font = 'bold 18px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffd43b';
+      ctx.fillText('PHOTO FINISH!', W / 2, 34);
+    }
+  }
+
+  var last = performance.now();
+  function loop(now) {
+    var frame = Math.min((now - last) / 1000, 0.05);
+    last = now;
+
+    if (state === 'countdown') {
+      var elapsed = now - countdownStart;
+      if (elapsed >= 3000 && chamber) {
+        chamber = false;
+        raceStart = now;
+      }
+      var dtc = frame / 8;
+      for (var j = 0; j < 8; j++) step(dtc);
+      if (elapsed >= 3500) state = 'running';
+    } else if (state === 'running') {
+      elapsedRace = (now - raceStart) / 1000;
+      var lead = 0, packSum = 0;
+      marbles.forEach(function (m) {
+        if (m.y > lead) lead = m.y;
+        packSum += m.y;
+      });
+      var packCenter = packSum / marbles.length;
+
+      var focusY = lead * 0.65 + packCenter * 0.35;
+      var targetCamY = Math.max(0, Math.min(WORLD_H - VIEW_H, focusY - VIEW_H * 0.48));
+      camY += (targetCamY - camY) * Math.min(1, frame * 6);
+
+      timeScale = (lead > FINISH_Y - 110) ? 0.35 : 1;
+      var substeps = 8;
+      var dt = (frame * timeScale) / substeps;
+      for (var i = 0; i < substeps; i++) step(dt);
+      var w = finishCheck();
+      if (w) endRace(w);
+      updateBoard();
+    }
+    draw(now);
+    requestAnimationFrame(loop);
+  }
+
+  addBtn.addEventListener('click', addOption);
+  optInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') addOption(); });
+  goBtn.addEventListener('click', startRace);
+  againBtn.addEventListener('click', startRace);
+  clearBtn.addEventListener('click', function () {
+    try { localStorage.removeItem('derbyHistory'); } catch (e) {}
+    renderHistory();
+  });
+
+  resetField();
+  renderChips();
+  renderHistory();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
